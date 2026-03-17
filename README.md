@@ -216,6 +216,13 @@ The `BisectionStepper` (default) inverts the position integral $x(t) = \int v(t)
 
 $$t_{\text{next pulse}} : \quad x(t_{\text{next}}) = n \cdot \text{StepUnit}$$
 
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/1075ab29-b645-4a53-b09d-733470578f74" width="48%" alt="Pulse train overview"/>
+  &nbsp;
+  <img src="https://github.com/user-attachments/assets/1e9fedd1-1238-4de2-9461-9bbddeb7a91c" width="48%" alt="Pulse timing detail"/>
+</p>
+<p align="center"><em>Pulse train captured on logic analyzer — timing error ≈ 2 µs per pulse</em></p>
+
 This is why the timing error is only ≈ 2 µs — the bottleneck is the MCPWM hardware resolution, not an ISR latency budget.
 
 The optional `NewtonStepper` uses Newton–Raphson iteration instead of bisection. It converges faster (typically 2–3 iterations vs. up to 20) but requires the speed profile to be C¹ continuous. It serves as a modular example of how to extend `BaseStepper`. Enable it with `#define NewtonStepperAvailable true`.
