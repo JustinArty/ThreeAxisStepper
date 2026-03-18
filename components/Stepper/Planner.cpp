@@ -340,7 +340,7 @@ void Planner::waitForIdle()
 {   
     while(true){
         PlannerState currentState = getState();
-        if(xTaskNotifyWait(0, 0, nullptr, 0) == pdTRUE || currentState == IDLE || currentState == STOPPED)
+        if((uxQueueMessagesWaiting(moveQueue) == 0 && currentState == IDLE) || currentState == STOPPED)
             break;
         vTaskDelay(pdMS_TO_TICKS(IDLE_POLL_MS));
     }
