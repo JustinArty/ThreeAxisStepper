@@ -221,7 +221,7 @@ $$t_{\text{next pulse}} : \quad x(t_{\text{next}}) = n \cdot \text{StepUnit}$$
   &nbsp;
   <img src="https://github.com/user-attachments/assets/1e9fedd1-1238-4de2-9461-9bbddeb7a91c" width="48%" alt="Pulse timing detail"/>
 </p>
-<p align="center"><em>Pulse train captured on logic analyzer — timing error ≈ 2 µs per pulse</em></p>
+<p align="center"><em>Pulse train captured on logic analyzer — (left) timing within single axis. (right) timing between three axis.</em></p>
 
 This is why the timing error is only ≈ 2 µs — the bottleneck is the MCPWM hardware resolution, not an ISR latency budget.
 
@@ -236,6 +236,8 @@ The `JunctionDeviationPlanner` maintains a ring buffer of up to `PLANNER_BLOCK_B
 3. A **forward pass** propagates from the current entry speed and caps each block's entry against what the axis can actually reach given distance and acceleration.
 
 This ensures the machine runs at the highest safe speed through every segment while guaranteeing it can always decelerate to the required exit speed.
+
+For best results, use a 240 MHz clock frequency and -O2 optimization.
 
 ---
 
