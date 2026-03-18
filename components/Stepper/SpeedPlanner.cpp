@@ -343,9 +343,7 @@ void JunctionDeviationPlanner::dispatchFront(Dispatcher& dispatcher) {
 
 void JunctionDeviationPlanner::setEndPosition(const Vec3 &pos)
 {
-    if(blocks.empty()){
-        endPosition = pos;
-    }
+    endPosition = pos;
 }
 
 float JunctionDeviationPlanner::calcStoppingDistance() const
