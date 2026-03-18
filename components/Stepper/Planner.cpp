@@ -290,9 +290,6 @@ bool Planner::moveTo(const Vec3 &position, float speed, TickType_t timeout)
     Command cmd{Command::Move, position, speed};
     if(xQueueSend(moveQueue, &cmd, timeout) != pdTRUE)
         return false;
-    if(currentState == IDLE){
-        xTaskNotify(plannerTaskHandle, NOTIFY_START, eSetValueWithOverwrite);
-    }
     return true;
 }
 
@@ -305,9 +302,6 @@ bool Planner::addWait(float time_s, TickType_t timeout)
     Command cmd{Command::Wait, {}, time_s};
     if(xQueueSend(moveQueue, &cmd, timeout) != pdTRUE)
         return false;
-    if(currentState == IDLE){
-        xTaskNotify(plannerTaskHandle, NOTIFY_START, eSetValueWithOverwrite);
-    }
     return true;
 }
 
@@ -322,9 +316,6 @@ bool Planner::addCallback(FixedFunction<void()> cb, TickType_t timeout)
     if(xQueueSend(moveQueue, &cmd, timeout) != pdTRUE){
         callbackBuffer.pop_back(); // rollback callback buffer if queue send fails
         return false;
-    }
-    if(currentState == IDLE){
-        xTaskNotify(plannerTaskHandle, NOTIFY_START, eSetValueWithOverwrite);
     }
     return true;
 }
