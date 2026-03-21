@@ -71,8 +71,8 @@ void Planner::plannerTask(void *arg)
     while(true) {
         planner->checkNotify(0);
         if(planner->state == Planner::IDLE){
-            planner->speedPlanner.setEndPosition(planner->getCurrentPos());// ensure speed planner's end position is correct when idle, so next moveTo() can compute correct distance and speed
             planner->checkNotify(portMAX_DELAY);
+            planner->speedPlanner.setEndPosition(planner->getCurrentPos());// ensure speed planner's end position is correct, so next moveTo() can compute correct distance and speed
         }
         else if(planner->state == Planner::NORMAL){
             if(planner->dispatcher.needMore()){
