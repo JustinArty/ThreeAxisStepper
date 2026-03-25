@@ -883,7 +883,6 @@ extern "C" void app_main(void)
         .PulsePin  = {xPulsePin, yPulsePin, zPulsePin},
         .DirPin    = {xDirPin,   yDirPin,   zDirPin},
         .StepUnit  = {0.005f, 0.005f, 0.005f},
-        .initStepperSolver = StepperConfig::BRENT
     };
     Planner planner;
     planner.init(config);
@@ -896,10 +895,6 @@ extern "C" void app_main(void)
     ESP_LOGI(TAG, "   PLANNER COMPREHENSIVE TEST SUITE");
     ESP_LOGI(TAG, "==========================================");
     vTaskDelay(pdMS_TO_TICKS(1000));
-
-    while(true){
-        test_maximum_pulse_frequency(planner);
-    }
 
     // Run all tests in order — each one resets the planner
     test_single_axis(planner);            // 1

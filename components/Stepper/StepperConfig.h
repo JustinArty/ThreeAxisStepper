@@ -1,7 +1,7 @@
 #pragma once
-#define EnablePulseDutySignal true
-#define EnableStepperDutySignal true
-#define EnablePlannerDutySignal true
+#define EnablePulseDutySignal false
+#define EnableStepperDutySignal false
+#define EnablePlannerDutySignal false
 #define GPIO_OUTPUT_LOCK false // set to true to disable pin output but keep all other functions, for testing
 
 // Pulse generator configuration
