@@ -286,6 +286,377 @@ void BisectionStepper::setPosition(float position)
     }
 }
 
+// -----------------------------------------------------------------------
+// BrentStepper — Brent-Dekker hybrid root-finding stepper
+// Combines bisection (safe bracket) + secant (linear interpolation) +
+// inverse quadratic interpolation (IQI) for superlinear convergence.
+// Typically 3-5 integrate() calls per pulse vs 12-18 for pure bisection.
+// -----------------------------------------------------------------------
+const char* BrentStepper::stepperTag = "BrentStepper";
+
+inline float BrentStepper::findRoot(const SpeedProfile *sp, float value, float t0, float t1, bool /*t0Above*/)
+{
+    // f(t) = getIntegrate(sp, t) - value
+    float a = t0, b = t1;
+    float fa = getIntegrate(sp, a) - value;
+    float fb = getIntegrate(sp, b) - value;
+
+    // Ensure b is the better estimate (|f(b)| <= |f(a)|)
+    if(fabsf(fa) < fabsf(fb)){
+        float tmp = a; a = b; b = tmp;
+        tmp = fa; fa = fb; fb = tmp;
+    }
+
+    float c = a, fc = fa;
+    float d = b; // last step size (unused until 2nd iteration)
+    bool mflag = true;
+    float s = b, fs = fb;
+
+    for(int i = 0; i < maxIterations; i++){
+        if(fabsf(fb) < tolerance || fabsf(b - a) < tolerance)
+            return b;
+
+        if(fa != fc && fb != fc){
+            // Inverse quadratic interpolation
+            float ab = a - b, ac = a - c, bc = b - c;
+            s = DIV(a * fb * fc , fa * (-ab) * (-ac))
+              + DIV(b * fa * fc , fb * ab * (-bc))
+              + DIV(c * fa * fb , fc * ac * bc);
+        } else {
+            // Secant method
+            s = b - DIV(fb * (b - a), (fb - fa));
+        }
+
+        // Five Brent conditions: fall back to bisection if any holds
+        float mid = (a + b) * 0.5f;
+        bool cond1 = (s < (3.0f * a + b) * 0.25f) || (s > b);
+        if(a > b) cond1 = (s > (3.0f * a + b) * 0.25f) || (s < b);
+        bool cond2 =  mflag && fabsf(s - b) >= fabsf(b - c) * 0.5f;
+        bool cond3 = !mflag && fabsf(s - b) >= fabsf(c - d) * 0.5f;
+        bool cond4 =  mflag && fabsf(b - c) < tolerance;
+        bool cond5 = !mflag && fabsf(c - d) < tolerance;
+
+        if(cond1 || cond2 || cond3 || cond4 || cond5){
+            s = mid;
+            mflag = true;
+        } else {
+            mflag = false;
+        }
+
+        fs = getIntegrate(sp, s) - value;
+        d = c;
+        c = b; fc = fb;
+
+        if(fa * fs < 0.0f){
+            b = s; fb = fs;
+        } else {
+            a = s; fa = fs;
+        }
+
+        // Keep b as the better estimate
+        if(fabsf(fa) < fabsf(fb)){
+            float tmp = a; a = b; b = tmp;
+            tmp = fa; fa = fb; fb = tmp;
+        }
+    }
+    return b;
+}
+
+void BrentStepper::resetTimer()
+{
+    targetPulseGen->reset();
+    velocityOffset = 0;
+    accumulatedStep = AccumulatedStepInit;
+}
+
+void BrentStepper::sendPulse(const SpeedProfile *sp, int64_t initTime)
+{
+    if(targetPulseGen == nullptr || sp == nullptr || sp->totalTime <= 0) return;
+
+    float dStep = getIntegrate(sp, sp->totalTime) * StepUnitInv;
+    float finalStep = accumulatedStep + dStep;
+    bool increaseFlag = finalStep > accumulatedStep;
+    if(static_cast<int>(floorf(finalStep)) == static_cast<int>(ceilf(finalStep))){
+        finalStep = std::nextafterf(finalStep, increaseFlag ? finalStep - 1 : finalStep + 1);
+    }
+    if(static_cast<int>(floorf(finalStep)) == static_cast<int>(floorf(accumulatedStep))){
+        accumulatedStep = finalStep;
+        return;
+    }
+    float initStep = accumulatedStep;
+    float t = 0;
+    float nextStep;
+    while(true){
+        nextStep = increaseFlag ? static_cast<int>(floorf(accumulatedStep)) + 1
+                                : static_cast<int>(ceilf(accumulatedStep)) - 1;
+        if((increaseFlag && nextStep > finalStep) || (!increaseFlag && nextStep < finalStep)){
+            break;
+        }
+        t = findRoot(sp, (nextStep - initStep) * StepUnit, t, sp->totalTime, !increaseFlag);
+        int64_t pulseTime = initTime + static_cast<int64_t>(t * 1e6f);
+        targetPulseGen->addPulse(pulseTime, increaseFlag);
+        accumulatedStep = nextStep;
+    }
+    accumulatedStep = finalStep;
+}
+
+void BrentStepper::sendPulse(const SubSpeedProfile &sp, float startAccumulatedStep, int64_t initTime)
+{
+    if(targetPulseGen == nullptr || sp.totalTime <= 0) return;
+    if(sp.getTrimStartTimeUs() == 0)
+        accumulateVelocityOffset = 0;
+    float finalStep = startAccumulatedStep + sp.getAxisEndIntegrate() * StepUnitInv;
+    bool increaseFlag = finalStep > accumulatedStep;
+    if(static_cast<int>(floorf(finalStep)) == static_cast<int>(ceilf(finalStep))){
+        finalStep = std::nextafterf(finalStep, increaseFlag ? finalStep - 1 : finalStep + 1);
+    }
+    if(static_cast<int>(floorf(finalStep)) == static_cast<int>(floorf(accumulatedStep))){
+        accumulatedStep = finalStep;
+        return;
+    }
+    float initStep = accumulatedStep;
+    float t = 0;
+    float nextStep;
+    while(true){
+        nextStep = increaseFlag ? static_cast<int>(floorf(accumulatedStep)) + 1
+                                : static_cast<int>(ceilf(accumulatedStep)) - 1;
+        if((increaseFlag && nextStep > finalStep) || (!increaseFlag && nextStep < finalStep)){
+            break;
+        }
+        t = findRoot(&sp, (nextStep - initStep) * StepUnit, t, sp.totalTime, !increaseFlag);
+        int64_t pulseTime = initTime + sp.getTrimStartTimeUs() + static_cast<int64_t>(t * 1e6f);
+        targetPulseGen->addPulse(pulseTime, increaseFlag);
+        accumulatedStep = nextStep;
+    }
+    accumulatedStep = finalStep;
+    accumulateVelocityOffset += velocityOffset * sp.totalTime;
+}
+
+float BrentStepper::getPosition() const
+{
+    return targetPulseGen ? targetPulseGen->getCount() * StepUnit : 0;
+}
+
+void BrentStepper::setPosition(float position)
+{
+    if(targetPulseGen){
+        targetPulseGen->setCount(static_cast<int32_t>(position * StepUnitInv));
+        accumulatedStep = AccumulatedStepInit;
+    }
+}
+
+// -----------------------------------------------------------------------
+// ImprovedBisectionStepper — divide-and-conquer shared-work bisection
+//
+// Key idea: within one 1ms interval there are N pulses whose pulse times
+// are all roots of the same monotone function integrate(t).  A plain
+// bisection for each pulse independently re-evaluates the midpoint of
+// the whole interval O(N) times.  By recursively splitting the time
+// interval at its midpoint and classifying each pulse target to either the
+// left or the right sub-interval, every midpoint evaluation is shared by
+// ALL pulses that still overlap that sub-interval.
+//
+// Cost: (N-1) internal-node evaluations + N * k_leaf leaf evaluations,
+// where k_leaf ≈ 3 (1 linear-interpolation step + ~2 bisection steps).
+// Plain bisection: N * 20.  D&C at 20 pulses: 19 + 60 ≈ 79 vs 400 → ~80%
+// reduction.  Same tolerance (1e-6) and no continuity requirement.
+// -----------------------------------------------------------------------
+const char* ImprovedBisectionStepper::stepperTag = "ImprovedBisectionStepper";
+
+inline float ImprovedBisectionStepper::findLeafRoot(
+    const SpeedProfile* sp, float target,
+    float t_a, float t_b, float f_a, float f_b)
+{
+    if(fabsf(f_b - f_a) < 1e-12f) return (t_a + t_b) * 0.5f;
+    const bool f_a_low = (f_a <= target);
+    // Linear interpolation as initial probe (false-position / regula falsi).
+    // For nearly-constant-speed intervals this is essentially exact on the
+    // first try, reducing leaf cost to 1-2 integrate() calls.
+    float t = t_a + (target - f_a) / (f_b - f_a) * (t_b - t_a);
+    if(t <= t_a || t >= t_b) t = (t_a + t_b) * 0.5f;  // clamp to bracket
+    for(int j = 0; j < LEAF_MAX_ITER; j++){
+        const float ft = getIntegrate(sp, t);
+        if(fabsf(ft - target) < tolerance) return t;
+        if((ft < target) == f_a_low){ t_a = t; f_a = ft; }
+        else                        { t_b = t; f_b = ft; }
+        t = (t_a + t_b) * 0.5f;  // subsequent probes: pure bisection
+    }
+    return t;
+}
+
+void ImprovedBisectionStepper::solveAndEmit(
+    const SpeedProfile* sp, int64_t baseTime, int64_t trimOffsetUs,
+    float initStep, int N, bool increaseFlag,
+    float f_start, float f_end, float totalTime)
+{
+    // Build the sorted target array (ascending for increasing, descending for decreasing).
+    // targets[k] = displacement value at which pulse k must fire.
+    float targets[MAX_PULSES_PER_INTERVAL];
+    const float firstNextStepF = increaseFlag
+        ? static_cast<float>(static_cast<int>(floorf(initStep)) + 1)
+        : static_cast<float>(static_cast<int>(ceilf(initStep))  - 1);
+    for(int k = 0; k < N; k++){
+        const float stepK = increaseFlag ? firstNextStepF + k : firstNextStepF - k;
+        targets[k] = (stepK - initStep) * StepUnit;
+    }
+
+    // Iterative D&C via explicit LIFO stack.
+    // Right sub-task is pushed before left so that left is popped first,
+    // ensuring pulses are emitted in chronological order.
+    DivideTask taskStack[TASK_STACK_SIZE];
+    int stackTop = 0;
+    taskStack[stackTop++] = {0.0f, totalTime, f_start, f_end, 0, N - 1};
+
+    while(stackTop > 0){
+        const DivideTask cur = taskStack[--stackTop];
+        if(cur.lo > cur.hi) continue;
+
+        if(cur.lo == cur.hi){
+            // Leaf: exactly one pulse in this bracket — solve with linear interp + bisection.
+            const float t_pulse = findLeafRoot(sp, targets[cur.lo],
+                                               cur.t_a, cur.t_b, cur.f_a, cur.f_b);
+            targetPulseGen->addPulse(
+                baseTime + trimOffsetUs + static_cast<int64_t>(t_pulse * 1e6f), increaseFlag);
+            continue;
+        }
+
+        // Internal node: evaluate midpoint once, shared by both sub-trees.
+        const float t_mid = (cur.t_a + cur.t_b) * 0.5f;
+        const float f_mid = getIntegrate(sp, t_mid);
+
+        // Binary-search split index k: targets[lo..k-1] belong to left, [k..hi] to right.
+        // For increasing: left sub-tree handles targets <= f_mid (earlier pulse times).
+        // For decreasing: left sub-tree handles targets >= f_mid.
+        int lo_k = cur.lo, hi_k = cur.hi + 1;
+        while(lo_k < hi_k){
+            const int mid_k = (lo_k + hi_k) >> 1;
+            if(increaseFlag ? targets[mid_k] <= f_mid : targets[mid_k] >= f_mid)
+                lo_k = mid_k + 1;
+            else
+                hi_k = mid_k;
+        }
+        const int k = lo_k;  // left: [cur.lo, k-1], right: [k, cur.hi]
+
+        if(k       <= cur.hi) taskStack[stackTop++] = {t_mid, cur.t_b, f_mid, cur.f_b, k,       cur.hi};
+        if(cur.lo  <= k - 1)  taskStack[stackTop++] = {cur.t_a, t_mid, cur.f_a, f_mid, cur.lo, k - 1};
+    }
+}
+
+void ImprovedBisectionStepper::resetTimer()
+{
+    targetPulseGen->reset();
+    velocityOffset = 0;
+    accumulatedStep = AccumulatedStepInit;
+}
+
+void ImprovedBisectionStepper::sendPulse(const SpeedProfile* sp, int64_t initTime)
+{
+    if(targetPulseGen == nullptr || sp == nullptr || sp->totalTime <= 0) return;
+
+    const float f_end = getIntegrate(sp, sp->totalTime);
+    float finalStep = accumulatedStep + f_end * StepUnitInv;
+    const bool increaseFlag = finalStep > accumulatedStep;
+    if(static_cast<int>(floorf(finalStep)) == static_cast<int>(ceilf(finalStep)))
+        finalStep = std::nextafterf(finalStep, increaseFlag ? finalStep - 1 : finalStep + 1);
+    if(static_cast<int>(floorf(finalStep)) == static_cast<int>(floorf(accumulatedStep))){
+        accumulatedStep = finalStep;
+        return;
+    }
+
+    const float initStep = accumulatedStep;
+    const int N = increaseFlag
+        ? static_cast<int>(floorf(finalStep)) - static_cast<int>(floorf(initStep))
+        : static_cast<int>(ceilf(initStep))   - static_cast<int>(ceilf(finalStep));
+
+    if(N > 0 && N <= MAX_PULSES_PER_INTERVAL){
+        solveAndEmit(sp, initTime, 0LL, initStep, N, increaseFlag,
+                     getIntegrate(sp, 0.0f), f_end, sp->totalTime);
+    } else {
+        // Fallback: plain bisection (N=0 or N>MAX is not expected in normal use)
+        float t = 0;
+        while(true){
+            const float nextStep = increaseFlag
+                ? static_cast<float>(static_cast<int>(floorf(accumulatedStep)) + 1)
+                : static_cast<float>(static_cast<int>(ceilf(accumulatedStep))  - 1);
+            if((increaseFlag && nextStep > finalStep) || (!increaseFlag && nextStep < finalStep)) break;
+            const float val = (nextStep - initStep) * StepUnit;
+            const bool t0Above = !increaseFlag;
+            float ta = t, tb = sp->totalTime, midT = ta;
+            for(int j = 0; j < 20; j++){
+                midT = (ta + tb) * 0.5f;
+                const float v = getIntegrate(sp, midT) - val;
+                if(fabsf(v) < tolerance) break;
+                if((t0Above && v < 0) || (!t0Above && v > 0)) tb = midT; else ta = midT;
+            }
+            t = midT;
+            targetPulseGen->addPulse(initTime + static_cast<int64_t>(t * 1e6f), increaseFlag);
+            accumulatedStep = nextStep;
+        }
+    }
+    accumulatedStep = finalStep;
+}
+
+void ImprovedBisectionStepper::sendPulse(const SubSpeedProfile& sp, float startAccumulatedStep, int64_t initTime)
+{
+    if(targetPulseGen == nullptr || sp.totalTime <= 0) return;
+    if(sp.getTrimStartTimeUs() == 0) accumulateVelocityOffset = 0;
+
+    const float f_end = getIntegrate(&sp, sp.totalTime);
+    float finalStep = startAccumulatedStep + sp.getAxisEndIntegrate() * StepUnitInv;
+    const bool increaseFlag = finalStep > accumulatedStep;
+    if(static_cast<int>(floorf(finalStep)) == static_cast<int>(ceilf(finalStep)))
+        finalStep = std::nextafterf(finalStep, increaseFlag ? finalStep - 1 : finalStep + 1);
+    if(static_cast<int>(floorf(finalStep)) == static_cast<int>(floorf(accumulatedStep))){
+        accumulatedStep = finalStep;
+        return;
+    }
+
+    const float initStep = accumulatedStep;
+    const int N = increaseFlag
+        ? static_cast<int>(floorf(finalStep)) - static_cast<int>(floorf(initStep))
+        : static_cast<int>(ceilf(initStep))   - static_cast<int>(ceilf(finalStep));
+
+    if(N > 0 && N <= MAX_PULSES_PER_INTERVAL){
+        solveAndEmit(&sp, initTime, sp.getTrimStartTimeUs(), initStep, N, increaseFlag,
+                     getIntegrate(&sp, 0.0f), f_end, sp.totalTime);
+    } else {
+        float t = 0;
+        while(true){
+            const float nextStep = increaseFlag
+                ? static_cast<float>(static_cast<int>(floorf(accumulatedStep)) + 1)
+                : static_cast<float>(static_cast<int>(ceilf(accumulatedStep))  - 1);
+            if((increaseFlag && nextStep > finalStep) || (!increaseFlag && nextStep < finalStep)) break;
+            const float val = (nextStep - initStep) * StepUnit;
+            const bool t0Above = !increaseFlag;
+            float ta = t, tb = sp.totalTime, midT = ta;
+            for(int j = 0; j < 20; j++){
+                midT = (ta + tb) * 0.5f;
+                const float v = getIntegrate(&sp, midT) - val;
+                if(fabsf(v) < tolerance) break;
+                if((t0Above && v < 0) || (!t0Above && v > 0)) tb = midT; else ta = midT;
+            }
+            t = midT;
+            targetPulseGen->addPulse(initTime + sp.getTrimStartTimeUs() + static_cast<int64_t>(t * 1e6f), increaseFlag);
+            accumulatedStep = nextStep;
+        }
+    }
+    accumulatedStep = finalStep;
+    accumulateVelocityOffset += velocityOffset * sp.totalTime;
+}
+
+float ImprovedBisectionStepper::getPosition() const
+{
+    return targetPulseGen ? targetPulseGen->getCount() * StepUnit : 0;
+}
+
+void ImprovedBisectionStepper::setPosition(float position)
+{
+    if(targetPulseGen){
+        targetPulseGen->setCount(static_cast<int32_t>(position * StepUnitInv));
+        accumulatedStep = AccumulatedStepInit;
+    }
+}
+
 struct ThreeAxisStepper::Impl{
     gpio_num_t enablePin{GPIO_NUM_NC};
     FixedFunction<void(bool)> enablePinCallback{nullptr};// callback to set enable pin, if not using gpio directly
@@ -717,7 +1088,7 @@ void ThreeAxisStepper::init(const StepperConfig &config)
         impl = new Impl();
     
     for(int i=0;i<3;i++){
-        if(initPulseGenType == MCPWM){
+        if(config.initPulseGenType == StepperConfig::MCPWM){
             auto pulseGen = new MCPWMPulseGenerator();
             pulseGen->init(config.PulsePin[i], config.DirPin[i], config.DirInverse[i]);
             impl->pulseGen[i] = pulseGen;
@@ -726,11 +1097,17 @@ void ThreeAxisStepper::init(const StepperConfig &config)
             return;
         }
 
-        if(initStepperSolver == BISECTION){
+        if(config.initStepperSolver == StepperConfig::BISECTION){
             impl->axisGen[i] = new BisectionStepper();
         }
+        else if(config.initStepperSolver == StepperConfig::BRENT){
+            impl->axisGen[i] = new BrentStepper();
+        }
+        else if(config.initStepperSolver == StepperConfig::IMPROVED_BISECTION){
+            impl->axisGen[i] = new ImprovedBisectionStepper();
+        }
 #if NewtonStepperAvailable
-        else if(initStepperSolver == NEWTON){
+        else if(config.initStepperSolver == StepperConfig::NEWTON){
             impl->axisGen[i] = new NewtonStepper();
         }
 #endif

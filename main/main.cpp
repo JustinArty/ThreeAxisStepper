@@ -272,6 +272,9 @@ static void test_stop_resume(Planner& planner)
     for (int i = 1; i <= 20; i++) {
         planner.moveTo(Vec3{(float)i * 5.0f, 0, 0}, 20);
     }
+    // flush(false) sends NOTIFY_START to wake the planner task from IDLE → NORMAL
+    // without it, moveTo() alone doesn't trigger motion when the planner is IDLE
+    planner.flush(false);
 
     // Let motion begin then stop mid-travel
     vTaskDelay(pdMS_TO_TICKS(800));
@@ -852,9 +855,10 @@ static void test_maximum_pulse_frequency(Planner& planner)
     ESP_LOGI(TAG, "====== TEST 27: Maximum Pulse Frequency ======");
     pulseLoopPin();
     planner.reset();
+    planner.setCurrentPos(Vec3{0,0,0});
     planner.setMaxSpeed(1000); // set very high speed to test pulse generation limits
     // 10 us interval = 100 kHz pulse frequency , *0.005 mm/step = 500 mm/s
-    planner.moveTo(Vec3{500,0,0},100);// 20k hz is about the max we can do , bottleneck is likely the BisectionStepper
+    planner.moveTo(Vec3{500,0,0},100);// 20k hz is about the max we can do
     planner.flush(true);
     assertPos(planner, Vec3{500,0,0}, "X=500 at max pulse frequency");
     vTaskDelay(pdMS_TO_TICKS(1000));
@@ -878,7 +882,8 @@ extern "C" void app_main(void)
     StepperConfig config = {
         .PulsePin  = {xPulsePin, yPulsePin, zPulsePin},
         .DirPin    = {xDirPin,   yDirPin,   zDirPin},
-        .StepUnit  = {0.005f, 0.005f, 0.005f}
+        .StepUnit  = {0.005f, 0.005f, 0.005f},
+        .initStepperSolver = StepperConfig::BRENT
     };
     Planner planner;
     planner.init(config);
@@ -891,6 +896,10 @@ extern "C" void app_main(void)
     ESP_LOGI(TAG, "   PLANNER COMPREHENSIVE TEST SUITE");
     ESP_LOGI(TAG, "==========================================");
     vTaskDelay(pdMS_TO_TICKS(1000));
+
+    while(true){
+        test_maximum_pulse_frequency(planner);
+    }
 
     // Run all tests in order — each one resets the planner
     test_single_axis(planner);            // 1

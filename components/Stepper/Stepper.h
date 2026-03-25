@@ -81,6 +81,55 @@ public:
     virtual void setPosition(float position) override;
 };
 
+class BrentStepper: public BaseStepper{
+private:
+    // solve pulse timing with Brent-Dekker hybrid method (bisection + secant + inverse quadratic interpolation)
+    // no derivative required, no C1 continuity requirement for speed profile
+    // superlinear convergence for smooth profiles (typically 3-5 iterations vs 12-18 for pure bisection)
+    // safe fallback to bisection guarantees convergence for any continuous profile
+    static const char* stepperTag;
+
+    const float tolerance{1e-6f};
+    const int maxIterations{20};
+    inline float findRoot(const SpeedProfile* sp, float value, float t0, float t1, bool t0Above);
+public:
+    BrentStepper() = default;
+    virtual void resetTimer()override;
+    virtual void sendPulse(const SpeedProfile* sp,int64_t initTime)override;
+    virtual void sendPulse(const SubSpeedProfile& sp,float startAccumulatedStep, int64_t initTime) override;
+    virtual float getPosition() const override;
+    virtual void setPosition(float position) override;
+};
+
+class ImprovedBisectionStepper: public BaseStepper{
+private:
+    // Divide-and-conquer shared-work bisection:
+    // One integrate() evaluation at the midpoint of each tree node is reused by both sub-intervals,
+    // reducing total integrate() calls from O(N*20) to O((N-1) + N*k_leaf) where k_leaf ~ 3-4.
+    // Typical reduction: ~70% fewer integrate() calls vs plain BisectionStepper.
+    // Same robustness guarantees: no C1 continuity required, same tolerance.
+    static const char* stepperTag;
+    static constexpr int MAX_PULSES_PER_INTERVAL = 64;  // covers up to 64 kHz at 1 ms interval
+    static constexpr int TASK_STACK_SIZE = 20;          // >= 2*ceil(log2(MAX_PULSES)) + 4
+    static constexpr int LEAF_MAX_ITER = 8;
+    const float tolerance{1e-6f};
+
+    struct DivideTask { float t_a, t_b, f_a, f_b; int lo, hi; };
+
+    inline float findLeafRoot(const SpeedProfile* sp, float target,
+                              float t_a, float t_b, float f_a, float f_b);
+    void solveAndEmit(const SpeedProfile* sp, int64_t baseTime, int64_t trimOffsetUs,
+                      float initStep, int N, bool increaseFlag,
+                      float f_start, float f_end, float totalTime);
+public:
+    ImprovedBisectionStepper() = default;
+    virtual void resetTimer() override;
+    virtual void sendPulse(const SpeedProfile* sp, int64_t initTime) override;
+    virtual void sendPulse(const SubSpeedProfile& sp, float startAccumulatedStep, int64_t initTime) override;
+    virtual float getPosition() const override;
+    virtual void setPosition(float position) override;
+};
+
 struct StepperConfig{
     enum ErrorType: uint8_t{
         PID_LIMIT_ERROR,
@@ -96,6 +145,20 @@ struct StepperConfig{
     FixedFunction<Vec3()> rulerCallback{nullptr};
     FixedFunction<void(const Vec3&)> rulerSetPositionCallback{nullptr};
     FixedFunction<void(StepperConfig::ErrorType)> errorCallback{nullptr};
+
+    enum PulseGenType: uint8_t{
+        MCPWM,
+    }
+    initPulseGenType{MCPWM};
+    enum StepperSolver: uint8_t{
+        BISECTION,
+        BRENT,
+        IMPROVED_BISECTION,
+#if NewtonStepperAvailable
+        NEWTON
+#endif
+    }
+    initStepperSolver{BISECTION};
 };
 
 class ThreeAxisStepper{
@@ -108,17 +171,6 @@ private:
 public:
     ThreeAxisStepper() = default;
     ~ThreeAxisStepper();
-    enum PulseGenType: uint8_t{
-        MCPWM,
-    }
-    initPulseGenType{MCPWM};
-    enum StepperSolver: uint8_t{
-        BISECTION,
-#if NewtonStepperAvailable
-        NEWTON
-#endif
-    }
-    initStepperSolver{BISECTION};
     void init(const StepperConfig& config);
 
     void reset(); // immediately stop and reset all state

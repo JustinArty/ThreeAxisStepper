@@ -304,5 +304,3 @@ MCPWM supports up to **6 channels** on the ESP32. Extending from 3 to 6 axes mea
 This project is released freely — **use it, reference it, modify it** as you wish. Attribution is appreciated but not required.
 
 ---
-
-*Built with the belief that the ESP32 is capable of far more sophisticated motion control than most people attempt. Hopefully this saves someone a month of debugging.*
